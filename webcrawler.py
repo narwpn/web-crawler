@@ -222,7 +222,7 @@ async def main():
                 else:
                     path_part += '/page.html'
             path_part = path_part.replace('.html', '')
-            query_part = current_url_parts.query.replace('?', '_')
+            query_part = current_url_parts.query.replace('?', '_').replace('&', '_')
             fragment_part = current_url_parts.fragment
             html_file_path = f'html/{current_url_parts.netloc}/{path_part}'
             if query_part != '':
