@@ -1,3 +1,5 @@
+import sys
+import time
 import requests
 from requests.exceptions import HTTPError, ConnectTimeout
 from urllib.parse import urlsplit, urljoin, unquote
@@ -199,7 +201,17 @@ async def main():
     html_count = 0
     last_fetch_netloc = ""
 
-    while len(frontier_q) > 0 and html_count < 10000:
+    html_limit = 10000
+    if len(sys.argv) > 1:
+        try:
+            html_limit = int(sys.argv[1])
+        except ValueError:
+            print("Invalid argument for html limit")
+            sys.exit(1)
+
+    start_time = time.time()
+
+    while len(frontier_q) > 0 and html_count < html_limit:
         current_url, pos_in_frontier = await dequeue_url()
         if current_url == "":
             await asyncio.sleep(1)
@@ -298,6 +310,11 @@ async def main():
             print(f"Other error occurred: {err}")
         finally:
             last_fetch_netloc = current_url_parts.netloc
+
+    end_time = time.time()
+    hours, seconds = divmod(end_time - start_time, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    print(f"Time taken: {hours} hours, {minutes} minutes, {seconds} seconds")
 
 
 asyncio.run(main())
