@@ -208,6 +208,7 @@ async def main():
         except ValueError:
             print("Invalid argument for html limit")
             sys.exit(1)
+    print(f"Crawling {html_limit} html pages")
 
     start_time = time.time()
 
