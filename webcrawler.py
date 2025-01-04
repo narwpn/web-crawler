@@ -122,7 +122,7 @@ netloc_consecutive_fetch_count = {}
 # used to limit consecutive fetch from the same netloc
 NETLOC_CONSECUTIVE_FETCH_LIMIT = 3
 # pause time in seconds after reaching the limit
-NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC = 15
+NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC = 30
 
 EXCLUDED_EXTENSIONS = {
     # Images
