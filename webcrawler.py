@@ -107,8 +107,12 @@ def append_file(path, text):
 
 frontier_q = [
     "https://www.ku.ac.th/th/",
-    "https://www.eng.ku.ac.th/",
-    "https://cpe.ku.ac.th/",
+    "https://www.ku.ac.th/th/faculty-bangkhen",
+    "https://www.ku.ac.th/th/faculty-kamphaeng-saen-campus",
+    "https://www.ku.ac.th/th/faculty-chalermphakiet-campus-sakon-nakhon",
+    "https://www.ku.ac.th/th/faculty-sriracha-campus",
+    "https://www.ku.ac.th/th/faculty-suphanburi-campus-establishment-project/",
+    "https://www.ku.ac.th/th/faculty-associate-institution",
 ]
 visited = set()
 
