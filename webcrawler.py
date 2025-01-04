@@ -1,205 +1,311 @@
 import sys
 import time
 import requests
-from requests.exceptions import HTTPError, ConnectTimeout
+from requests.exceptions import ConnectTimeout, ReadTimeout
 from urllib.parse import urlsplit, urljoin, unquote
 from urllib.robotparser import RobotFileParser
 from bs4 import BeautifulSoup
 import os
-import asyncio
+from enum import Enum
 
 
 class ContentTypeException(Exception):
     pass
 
 
-CONTENT_TYPE_HTML = "text/html"
-CONTENT_TYPE_XML = "application/xml"
-CONTENT_TYPE_TXT = "text/plain"
+class ContentType(Enum):
+    HTML = "text/html"
+    XML = "application/xml"
+    TXT = "text/plain"
 
 
-USER_AGENT = "SantaBot"
+class WebCrawler:
+    USER_AGENT = "SantaBot"
+    FROM_EMAIL = "test@email.com"
 
+    # URL timeout handling limits
+    URL_TIMEOUT_PAUSE_SEC = 60  # Seconds to wait before a URL can be retried
+    URL_MAX_TIMEOUT_RETRIES = 3  # Max retries for a single URL before skipping
 
-def get_raw_document(url, content_type):
-    headers = {"User-Agent": USER_AGENT, "From": "test@email.com"}
-    response = requests.get(url, headers=headers, timeout=5)
-    response.raise_for_status()
-    header_content_type = response.headers["content-type"]
-    if not content_type in header_content_type:
-        raise ContentTypeException
-    if content_type == CONTENT_TYPE_HTML:
-        soup = BeautifulSoup(response.content, "html.parser")
-        return soup.prettify().lower()
-    else:
-        return response.text
+    # Netloc timeout handling limits
+    NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER = 5  # How many consecutive timeouts within a netloc before pausing it
+    NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_MIN = 15  # Minutes to pause netloc before it can be retried
+    NETLOC_CONSECUTIVE_TIMEOUT_MAX_PAUSE = 3  # Max times a netloc can be paused before skipping
 
+    # Consecutive fetch limits
+    NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER = 5  # How many consecutive fetches before pausing netloc
+    NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC = 30  # Seconds to pause netloc after reaching limit
 
-# def get_raw_urls(raw_html):
-#     urls = []
-#     pattern_double_quotes = ('<a href="', '"')
-#     pattern_single_quotes = ('<a href=\'', '\'')
-#     index = 0;  length = len(raw_html)
-#     while index < length:
-#         start_tag_single_quotes = raw_html.find(pattern_single_quotes[0], index)
-#         start_tag_double_quotes = raw_html.find(pattern_double_quotes[0], index)
-#         current_is_double_quotes = False
-#         start_url = 0; end_url = 0
+    EXCLUDED_EXTENSIONS = {
+        # Images
+        ".jpg", ".jpeg", ".png", ".svg", ".gif", ".webp", ".bmp", ".tiff",
+        # Documents
+        ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
+        # Archives
+        ".zip", ".rar", ".tar", ".gz", ".7z", ".iso",
+        # Media
+        ".mp3", ".wav", ".ogg", ".mp4", ".avi", ".mov",
+        # Executables and scripts
+        ".exe", ".dll", ".bin", ".bat", ".sh",
+        # Other common file types
+        ".css", ".js", ".json", ".xml", ".csv", ".txt",
+    }
 
-#         if start_tag_double_quotes < 0 and start_tag_single_quotes < 0:
-#             break
-#         if start_tag_single_quotes < 0:
-#             current_is_double_quotes = True
-#         elif start_tag_double_quotes < 0:
-#             current_is_double_quotes = False
-#         elif start_tag_double_quotes < start_tag_single_quotes:
-#             current_is_double_quotes = True
-#         else:
-#             current_is_double_quotes = False
+    def __init__(self, initial_urls, html_limit):
+        self.frontier_q = initial_urls
+        self.visited = set()
 
-#         if current_is_double_quotes:
-#             start_url = start_tag_double_quotes + len(pattern_double_quotes[0])
-#             end_url = raw_html.find(pattern_double_quotes[1], start_url)
-#         else:
-#             start_url = start_tag_single_quotes + len(pattern_single_quotes[0])
-#             end_url = raw_html.find(pattern_single_quotes[1], start_url)
+        self.html_count = 0
+        self.html_limit = html_limit
 
-#         link = raw_html[start_url:end_url]
-#         if len(link) > 0:
-#             if link not in urls:
-#                 urls.append(link)
+        self.last_fetch_netloc = ""
+        self.last_fetch_timeout = False
 
-#         index = end_url + 1
+        self.netloc_seen = {}
+        self.netloc_rp = {}
 
-#     return urls
+        self.url_pause_until = {}  # Timestamp when URL can be retried
+        self.url_timeout_count = {}  # Count timeouts per URL
 
+        self.netloc_pause_until = {}  # Timestamp when netloc can be retried
 
-def get_raw_urls(raw_html):
-    soup = BeautifulSoup(raw_html, "html.parser")
-    urls = []
-    for a_tag in soup.find_all("a", href=True):
-        urls.append(a_tag["href"])
-    return urls
+        self.netloc_consecutive_timeout_count = {}  # Count consecutive timeouts per netloc
+        self.netloc_consecutive_timeout_pause_count = {}  # How many times netloc has been paused due to consecutive timeouts
 
+        self.netloc_consecutive_fetch_count = {}  # Count consecutive fetches per netloc
 
-def get_normalized_urls(base_url, urls):
-    base_url_parts = urlsplit(base_url)
-    base_url = f"{base_url_parts.scheme}://{base_url_parts.netloc}"
-    normalized_urls = []
-    for url in urls:
-        normalized_urls.append(unquote(urljoin(base_url, url)))
-    return normalized_urls
+    def get_raw_document(self, url, content_type):
+        headers = {"User-Agent": self.USER_AGENT, "From": self.FROM_EMAIL}
+        response = requests.get(url, headers=headers, timeout=5)
+        response.raise_for_status()
+        header_content_type = response.headers["content-type"]
+        if not content_type.value in header_content_type:
+            raise ContentTypeException
+        if content_type == ContentType.HTML:
+            soup = BeautifulSoup(response.content, "html.parser")
+            return soup.prettify().lower()
+        else:
+            return response.text
 
+    def get_raw_urls(self, raw_html):
+        soup = BeautifulSoup(raw_html, "html.parser")
+        return [a_tag["href"] for a_tag in soup.find_all("a", href=True)]
 
-def write_file(path, text):
-    dirname, filename = os.path.split(path)
-    if dirname:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
+    def get_normalized_urls(self, base_url, urls):
+        base_url_parts = urlsplit(base_url)
+        base_url = f"{base_url_parts.scheme}://{base_url_parts.netloc}"
+        return [unquote(urljoin(base_url, url)) for url in urls]
 
+    def write_file(self, path, text):
+        dirname, filename = os.path.split(path)
+        if dirname:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
 
-def append_file(path, text):
-    dirname, filename = os.path.split(path)
-    if dirname:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a+", encoding="utf-8") as f:
-        f.write(text)
+    def append_file(self, path, text):
+        dirname, filename = os.path.split(path)
+        if dirname:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a+", encoding="utf-8") as f:
+            f.write(text)
 
+    def filter_and_enqueue_urls(self, urls):
+        for url in urls:
+            url_parts = urlsplit(url)
+            if (
+                url not in self.frontier_q
+                and url not in self.visited
+                and url_parts.scheme.startswith("http")
+                and url_parts.netloc.endswith(".ku.ac.th")
+                and not url_parts.path.endswith(tuple(self.EXCLUDED_EXTENSIONS))
+            ):
+                self.frontier_q.append(url)
 
-frontier_q = [
-    "https://www.ku.ac.th/th/",
-    "https://www.ku.ac.th/th/faculty-bangkhen",
-    "https://www.ku.ac.th/th/faculty-kamphaeng-saen-campus",
-    "https://www.ku.ac.th/th/faculty-chalermphakiet-campus-sakon-nakhon",
-    "https://www.ku.ac.th/th/faculty-sriracha-campus",
-    "https://www.ku.ac.th/th/faculty-suphanburi-campus-establishment-project/",
-    "https://www.ku.ac.th/th/faculty-associate-institution",
-]
-visited = set()
+    def dequeue_url(self):
+        current_time = time.time()
+        for i in range(len(self.frontier_q)):
+            url = self.frontier_q[i]
+            netloc = urlsplit(url).netloc
 
-netloc_consecutive_fetch_count = {}
-# used to limit consecutive fetch from the same netloc
-NETLOC_CONSECUTIVE_FETCH_LIMIT = 3
-# pause time in seconds after reaching the limit
-NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC = 30
+            # Remove url if its netloc has exceeded max pause count
+            if self.netloc_consecutive_timeout_pause_count.get(netloc, 0) > self.NETLOC_CONSECUTIVE_TIMEOUT_MAX_PAUSE:
+                self.frontier_q.pop(i)
+                continue
 
-EXCLUDED_EXTENSIONS = {
-    # Images
-    ".jpg", ".jpeg", ".png", ".svg", ".gif", ".webp", ".bmp", ".tiff",
-    # Documents
-    ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
-    # Archives
-    ".zip", ".rar", ".tar", ".gz", ".7z", ".iso",
-    # Media
-    ".mp3", ".wav", ".ogg", ".mp4", ".avi", ".mov",
-    # Executables and scripts
-    ".exe", ".dll", ".bin", ".bat", ".sh",
-    # Other common file types
-    ".css", ".js", ".json", ".xml", ".csv", ".txt",  # fmt: skip
-}
+            # Remove url if its timeout count has exceeded max retries
+            if self.url_timeout_count.get(url, 0) > self.URL_MAX_TIMEOUT_RETRIES:
+                self.frontier_q.pop(i)
+                continue
 
+            # Skip url if its netloc is paused
+            if netloc in self.netloc_pause_until and current_time < self.netloc_pause_until[netloc]:
+                continue
 
-async def wait_reset_consecutive_fetch(netloc, pause_sec):
-    await asyncio.sleep(pause_sec)
-    netloc_consecutive_fetch_count[netloc] = 0
+            # Skip if url is paused
+            if url in self.url_pause_until and current_time < self.url_pause_until[url]:
+                continue
 
+            return self.frontier_q.pop(i), i
 
-def filter_and_enqueue_urls(urls):
-    for url in urls:
-        url_parts = urlsplit(url)
-        if (
-            url not in frontier_q
-            and url not in visited
-            and url_parts.scheme.startswith("http")
-            and url_parts.netloc.endswith(".ku.ac.th")
-            and not url_parts.path.endswith(tuple(EXCLUDED_EXTENSIONS))
-        ):
-            frontier_q.append(url)
-
-
-# FIFO, BFS
-async def dequeue_url():
-    current_url = ""
-    i = 0
-    for i in range(len(frontier_q)):
-        url = frontier_q[i]
-        netloc = urlsplit(url).netloc
-        if netloc_consecutive_fetch_count.get(netloc) is None:
-            netloc_consecutive_fetch_count[netloc] = 0
-
-        if netloc_consecutive_fetch_count[netloc] < NETLOC_CONSECUTIVE_FETCH_LIMIT:
-            current_url = frontier_q.pop(i)
-            return current_url, i
-    else:
         return "", -1
 
+    def get_html_file_path(self, url):
+        url_parts = urlsplit(url)
+        path_part = url_parts.path.strip("/").replace(".htm", ".html")
+        if ".html" not in path_part:
+            path_part = "page.html" if path_part == "" else f"{path_part}/page.html"
+        path_part = path_part.replace(".html", "")
+        query_part = url_parts.query.replace("?", "_").replace("&", "_")
+        fragment_part = url_parts.fragment
 
-def get_html_file_path(url):
-    url_parts = urlsplit(url)
-    path_part = url_parts.path.strip("/").replace(".htm", ".html")
-    if ".html" not in path_part:
-        if path_part == "":
-            path_part = "page.html"
+        html_file_path = f"html/{url_parts.netloc}/{path_part}"
+        if query_part:
+            html_file_path += f"_{query_part}"
+        if fragment_part:
+            html_file_path += f"_#{fragment_part}"
+        return f"{html_file_path}.html"
+
+    def process_robots_txt(self, netloc):
+        if netloc not in self.netloc_seen:
+            self.netloc_seen[netloc] = True
+            robots_txt_url = f"https://{netloc}/robots.txt"
+            try:
+                robots_txt = self.get_raw_document(robots_txt_url, ContentType.TXT)
+                rp = RobotFileParser()
+                rp.parse(robots_txt.splitlines())
+                self.netloc_rp[netloc] = rp
+
+                robots_txt_file_path = f"html/{netloc}/robots.txt"
+                self.write_file(robots_txt_file_path, robots_txt)
+                print(f"Got robots.txt from {robots_txt_url}")
+
+                self.append_file("list_robots.txt", f"{netloc}\n")
+                if rp.site_maps():
+                    print(f"Found sitemap at {rp.site_maps()}")
+                    self.append_file("list_sitemap.txt", f"{netloc}\n")
+
+            except (Exception) as e:
+                print(f"Error processing robots.txt: {e}")
+
+    def crawl(self):
+        start_time = time.time()
+
+        while len(self.frontier_q) > 0 and self.html_count < self.html_limit:
+            current_url, frontier_q_index = self.dequeue_url()
+            if not current_url:
+                time.sleep(1)
+                continue
+
+            self.visited.add(current_url)
+            current_url_parts = urlsplit(current_url)
+
+            self.handle_netloc_consecutive_fetch(current_url_parts.netloc)
+            self.process_robots_txt(current_url_parts.netloc)
+
+            if (
+                current_url_parts.netloc in self.netloc_rp
+                and not self.netloc_rp[current_url_parts.netloc].can_fetch(self.USER_AGENT, current_url)
+            ):
+                continue
+
+            self.process_url(current_url, frontier_q_index)
+            time.sleep(1)
+
+        self.print_completion_time(start_time)
+
+    def handle_netloc_consecutive_fetch(self, current_netloc):
+        if not current_netloc in self.netloc_consecutive_fetch_count:
+            self.netloc_consecutive_fetch_count[current_netloc] = 0
+
+        if self.last_fetch_netloc == current_netloc:
+            self.netloc_consecutive_fetch_count[current_netloc] += 1
         else:
-            path_part += "/page.html"
-    path_part = path_part.replace(".html", "")
-    query_part = url_parts.query.replace("?", "_").replace("&", "_")
-    fragment_part = url_parts.fragment
-    html_file_path = f"html/{url_parts.netloc}/{path_part}"
-    if query_part != "":
-        html_file_path += f"_{query_part}"
-    if fragment_part != "":
-        html_file_path += f"_{fragment_part}"
-    html_file_path += ".html"
-    return html_file_path
+            self.netloc_consecutive_fetch_count[current_netloc] = 1
+            if self.last_fetch_netloc:
+                self.netloc_consecutive_fetch_count[self.last_fetch_netloc] = 0
+
+        if self.netloc_consecutive_fetch_count[current_netloc] == self.NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER:
+            self.netloc_pause_until[current_netloc] = time.time() + self.NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC
+
+    def process_url(self, current_url, frontier_q_index):
+        current_netloc = urlsplit(current_url).netloc
+        if not current_url in self.url_timeout_count:
+            self.url_timeout_count[current_url] = 0
+        if not current_netloc in self.netloc_consecutive_timeout_count:
+            self.netloc_consecutive_timeout_count[current_netloc] = 0
+        if not current_netloc in self.netloc_consecutive_timeout_pause_count:
+            self.netloc_consecutive_timeout_pause_count[current_netloc] = 0
+
+        current_fetch_timeout = False
+        try:
+            raw_html = self.get_raw_document(current_url, ContentType.HTML)
+
+            self.netloc_consecutive_timeout_count[current_netloc] = 0
+            self.netloc_consecutive_timeout_count[self.last_fetch_netloc] = 0
+
+            html_file_path = self.get_html_file_path(current_url)
+            self.write_file(html_file_path, raw_html)
+
+            self.html_count += 1
+            print(f"#{self.html_count} Got html from {current_url}")
+
+            raw_urls = self.get_raw_urls(raw_html)
+            normalized_urls = self.get_normalized_urls(current_url, raw_urls)
+            self.filter_and_enqueue_urls(normalized_urls)
+            print(f"Current frontier size: {len(self.frontier_q)}")
+        
+        except (ConnectTimeout, ReadTimeout):
+            current_fetch_timeout = True
+
+            # Handle url timeout
+            self.url_timeout_count[current_url] += 1
+            self.url_pause_until[current_url] = time.time() + self.URL_TIMEOUT_PAUSE_SEC
+            print(f"Timeout from {current_url}. Pausing for {self.URL_TIMEOUT_PAUSE_SEC} seconds")
+
+            # Handle netloc consecutive timeout
+            if current_netloc == self.last_fetch_netloc:
+                self.netloc_consecutive_timeout_count[current_netloc] += 1
+            else:
+                self.netloc_consecutive_timeout_count[current_netloc] = 1
+                if self.last_fetch_netloc:
+                    self.netloc_consecutive_timeout_count[self.last_fetch_netloc] = 0
+            
+            if self.netloc_consecutive_timeout_count[current_netloc] == self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER:
+                self.netloc_consecutive_timeout_pause_count[current_netloc] += 1
+                self.netloc_pause_until[current_netloc] = time.time() + self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_MIN * 60
+                print(f"Netloc {current_netloc} has exceeded max consecutive timeout count. Pausing for {self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_MIN} minutes")
+
+            # Put the url back to the frontier queue
+            self.frontier_q.insert(frontier_q_index, current_url)
+
+        except Exception as e:
+            print(f"Error processing URL {current_url}: {e}")
+
+        finally:
+            self.last_fetch_netloc = urlsplit(current_url).netloc
+            if current_fetch_timeout:
+                self.last_fetch_timeout = True
+            else:
+                self.last_fetch_timeout = False
+
+    def print_completion_time(self, start_time):
+        end_time = time.time()
+        hours, seconds = divmod(end_time - start_time, 3600)
+        minutes, seconds = divmod(seconds, 60)
+        print(f"Time taken: {hours} hours, {minutes} minutes, {seconds} seconds")
 
 
-async def main():
-    netloc_seen = {}
-    netloc_rp = {}
-    html_count = 0
-    last_fetch_netloc = ""
+def main():
+    initial_urls = [
+        "https://www.ku.ac.th/th/",
+        "https://www.ku.ac.th/th/faculty-bangkhen",
+        "https://www.ku.ac.th/th/faculty-kamphaeng-saen-campus",
+        "https://www.ku.ac.th/th/faculty-chalermphakiet-campus-sakon-nakhon",
+        "https://www.ku.ac.th/th/faculty-sriracha-campus",
+        "https://www.ku.ac.th/th/faculty-suphanburi-campus-establishment-project/",
+        "https://www.ku.ac.th/th/faculty-associate-institution",
+    ]
 
     html_limit = 10000
     if len(sys.argv) > 1:
@@ -210,112 +316,9 @@ async def main():
             sys.exit(1)
     print(f"Crawling {html_limit} html pages")
 
-    start_time = time.time()
-
-    while len(frontier_q) > 0 and html_count < html_limit:
-        current_url, pos_in_frontier = await dequeue_url()
-        if current_url == "":
-            await asyncio.sleep(1)
-            continue
-        visited.add(current_url)
-        current_url_parts = urlsplit(current_url)
-
-        if netloc_consecutive_fetch_count[current_url_parts.netloc] is None:
-            netloc_consecutive_fetch_count[current_url_parts.netloc] = 0
-
-        if last_fetch_netloc == current_url_parts.netloc:
-            netloc_consecutive_fetch_count[current_url_parts.netloc] += 1
-        else:
-            netloc_consecutive_fetch_count[current_url_parts.netloc] = 1
-            if (
-                last_fetch_netloc != ""
-                and netloc_consecutive_fetch_count[last_fetch_netloc]
-                < NETLOC_CONSECUTIVE_FETCH_LIMIT
-            ):
-                netloc_consecutive_fetch_count[last_fetch_netloc] = 0
-
-        if (
-            netloc_consecutive_fetch_count[current_url_parts.netloc]
-            == NETLOC_CONSECUTIVE_FETCH_LIMIT
-        ):
-            asyncio.create_task(
-                wait_reset_consecutive_fetch(
-                    current_url_parts.netloc, NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC
-                )
-            )
-
-        # prepare robots.txt
-        if current_url_parts.netloc not in netloc_seen:
-            netloc_seen[current_url_parts.netloc] = True
-            robots_txt_url = ""
-            try:
-                robots_txt_url = f"{current_url_parts.scheme}://{current_url_parts.netloc}/robots.txt"
-                robots_txt = get_raw_document(robots_txt_url, CONTENT_TYPE_TXT)
-
-                # below will only be executed if robots.txt is found
-                rp = RobotFileParser()
-                rp.parse(robots_txt.splitlines())
-                netloc_rp[current_url_parts.netloc] = rp
-
-                # write robots.txt to file
-                robots_txt_file_path = f"html/{current_url_parts.netloc}/robots.txt"
-                write_file(robots_txt_file_path, robots_txt)
-
-                # save netloc to file if the it has robots.txt and sitemap
-                print(f"Found robots.txt at {robots_txt_url}")
-                append_file("list_robots.txt", current_url_parts.netloc + "\n")
-                if rp.site_maps():
-                    print(f"Found sitemap at {rp.site_maps()}")
-                    append_file("list_sitemap.txt", current_url_parts.netloc + "\n")
-
-            except ContentTypeException:
-                print(f"{robots_txt_url} is not of content-type {CONTENT_TYPE_TXT}")
-            except HTTPError as http_err:
-                print(f"HTTP error occurred: {http_err}")
-            except ConnectTimeout as timeout_err:
-                print(f"Timeout error occurred: {timeout_err}")
-            except Exception as err:
-                print(f"Other error occurred: {err}")
-
-        # do not fetch if prohibited in robots.txt, fetch if there isn't one
-        if netloc_rp.get(current_url_parts.netloc) and not netloc_rp[
-            current_url_parts.netloc
-        ].can_fetch(USER_AGENT, current_url):
-            continue
-
-        try:
-            await asyncio.sleep(1)
-            raw_html = get_raw_document(current_url, CONTENT_TYPE_HTML)
-
-            # below will only be executed if the url returns html
-            # write html to file
-            html_file_path = get_html_file_path(current_url)
-            write_file(html_file_path, raw_html)
-
-            html_count += 1
-            print(f"(#{html_count}) Found html at {current_url}")
-
-            # extract urls within the page
-            raw_urls = get_raw_urls(raw_html)
-            normalized_urls = get_normalized_urls(current_url, raw_urls)
-            filter_and_enqueue_urls(normalized_urls)
-            print(f"Current frontier size: {len(frontier_q)}")
-
-        except ContentTypeException:
-            print(f"{current_url} is not of content-type {CONTENT_TYPE_HTML}")
-        except HTTPError as http_err:
-            print(f"HTTP error occurred: {http_err}")
-        except ConnectTimeout as timeout_err:
-            print(f"Timeout error occurred: {timeout_err}")
-        except Exception as err:
-            print(f"Other error occurred: {err}")
-        finally:
-            last_fetch_netloc = current_url_parts.netloc
-
-    end_time = time.time()
-    hours, seconds = divmod(end_time - start_time, 3600)
-    minutes, seconds = divmod(seconds, 60)
-    print(f"Time taken: {hours} hours, {minutes} minutes, {seconds} seconds")
+    crawler = WebCrawler(initial_urls, html_limit)
+    crawler.crawl()
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    main()
