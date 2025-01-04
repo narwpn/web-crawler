@@ -114,9 +114,9 @@ visited = set()
 
 netloc_consecutive_fetch_count = {}
 # used to limit consecutive fetch from the same netloc
-NETLOC_CONSECUTIVE_FETCH_LIMIT = 5
+NETLOC_CONSECUTIVE_FETCH_LIMIT = 3
 # pause time in seconds after reaching the limit
-NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC = 120
+NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC = 15
 
 EXCLUDED_EXTENSIONS = {
     # Images
@@ -292,6 +292,8 @@ async def main():
             print(f"Timeout error occurred: {timeout_err}")
         except Exception as err:
             print(f"Other error occurred: {err}")
+        finally:
+            last_fetch_netloc = current_url_parts.netloc
 
 
 asyncio.run(main())
