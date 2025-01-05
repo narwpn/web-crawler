@@ -260,7 +260,7 @@ class WebCrawler:
             normalized_urls = self.get_normalized_urls(current_url, raw_urls_in_page)
             old_frontier_q_size = len(self.frontier_q)
             self.filter_and_enqueue_urls(normalized_urls)
-            print(f"    Found {len(self.frontier_q) - old_frontier_q_size} new urls ({len(self.frontier_q)} total)")
+            print(f"    Found {len(self.frontier_q) - old_frontier_q_size} new urls ({len(self.frontier_q)} in frontier)")
 
         except (ConnectTimeout, ReadTimeout):
             current_fetch_timeout = True
