@@ -181,7 +181,7 @@ class WebCrawler:
                     self.append_file("list_sitemap.txt", f"{netloc}\n")
 
             except (Exception) as e:
-                print(f"Failed to get robots.txt: {e}")
+                print(f"Failed to get or parse robots.txt for {netloc}: {e}")
 
     def crawl(self):
         start_time = time.time()
@@ -219,7 +219,7 @@ class WebCrawler:
 
         if self.netloc_consecutive_fetch_count[current_netloc] == self.NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER:
             self.netloc_pause_until[current_netloc] = time.time() + self.NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC
-            print(f"Netloc {current_netloc} has exceeded max consecutive fetch count. Pausing for {self.NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC} seconds")
+            print(f"{current_netloc} has exceeded max consecutive fetch count. Pausing for {self.NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC} seconds")
 
     def process_url(self, current_url):
         current_netloc = urlsplit(current_url).netloc
@@ -266,7 +266,7 @@ class WebCrawler:
                 self.netloc_consecutive_timeout_pause_count[current_netloc] += 1
                 self.netloc_pause_until[current_netloc] = time.time() + self.NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC * 2 ** (self.netloc_consecutive_timeout_pause_count[current_netloc] - 1)
                 self.requeue_url_fetch_history()
-                print(f"Netloc {current_netloc} has exceeded max consecutive timeout count. Pausing for {self.NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC} seconds")
+                print(f"{current_netloc} has exceeded max consecutive timeout count. Pausing for {self.NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC} seconds")
 
         except Exception as e:
             print(f"Error processing URL {current_url}: {e}")
