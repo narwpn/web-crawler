@@ -240,13 +240,13 @@ class WebCrawler:
         if not current_netloc in self.netloc_consecutive_timeout_pause_count:
             self.netloc_consecutive_timeout_pause_count[current_netloc] = 0
 
+        current_fetch_timeout = False
         try:
             self.save_url_fetch_history(current_url)
             self.handle_netloc_consecutive_fetch(current_netloc)
             raw_html = self.get_raw_document(current_url, ContentType.HTML)
 
             # Below is only executed if the html is successfully fetched
-            current_fetch_timeout = False
             html_file_path = self.get_html_file_path(current_url)
             self.write_file(html_file_path, raw_html)
             self.html_count += 1
