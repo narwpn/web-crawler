@@ -55,11 +55,11 @@ class WebCrawler:
         self.frontier_q = initial_urls
         self.visited = set()
 
-        self.html_count = 0
         self.HTML_LIMIT = html_limit
+        self.html_count = 0
 
-        self.netloc_page_count = {}
         self.NETLOC_PAGE_LIMIT = netloc_page_limit
+        self.netloc_page_count = {}
 
         self.url_fetch_history = [] # Keep NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER previous urls fetched to requeue after consecutive timeout
         self.last_fetch_timeout = False
