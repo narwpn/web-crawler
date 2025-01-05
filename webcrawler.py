@@ -10,7 +10,12 @@ from enum import Enum
 
 
 class ContentTypeException(Exception):
-    pass
+    def __init__(self, expected_content_type, actual_content_type):
+        self.expected_content_type = expected_content_type
+        self.actual_content_type = actual_content_type
+
+    def __str__(self):
+        return f"Expected content type: {self.expected_content_type}, actual content type: {self.actual_content_type}"
 
 
 class ContentType(Enum):
@@ -53,9 +58,8 @@ class WebCrawler:
         self.html_count = 0
         self.html_limit = html_limit
 
-        self.last_fetch_netloc = ""
-        self.last_fetch_timeout = False
         self.url_fetch_history = [] # Keep NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER previous urls fetched to requeue after consecutive timeout
+        self.last_fetch_timeout = False
 
         self.netloc_seen = {}
         self.netloc_rp = {}
@@ -68,9 +72,16 @@ class WebCrawler:
         self.netloc_consecutive_fetch_count = {}  # Count consecutive fetches per netloc
     
     def save_url_fetch_history(self, url):
+        # -> most recent, ..., least recent
+        # current_url is at index 0
         self.url_fetch_history.insert(0, url)
         if len(self.url_fetch_history) > self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER:
             self.url_fetch_history.pop()
+
+    def get_last_fetch_netloc(self):
+        if len(self.url_fetch_history) < 2:
+            return ""
+        return urlsplit(self.url_fetch_history[1]).netloc
 
     def requeue_url_fetch_history(self):
         for url in self.url_fetch_history:
@@ -80,14 +91,14 @@ class WebCrawler:
             except KeyError:
                 pass
 
-    def get_raw_document(self, url, content_type):
+    def get_raw_document(self, url, expected_content_type: ContentType):
         headers = {"User-Agent": self.USER_AGENT, "From": self.FROM_EMAIL}
         response = requests.get(url, headers=headers, timeout=5)
         response.raise_for_status()
-        header_content_type = response.headers["content-type"]
-        if not content_type.value in header_content_type:
-            raise ContentTypeException
-        if content_type == ContentType.HTML:
+        actual_content_type = response.headers["content-type"]
+        if not expected_content_type.value in actual_content_type:
+            raise ContentTypeException(expected_content_type.value, actual_content_type)
+        if expected_content_type == ContentType.HTML:
             soup = BeautifulSoup(response.content, "html.parser")
             return soup.prettify().lower()
         else:
@@ -210,12 +221,12 @@ class WebCrawler:
         if not current_netloc in self.netloc_consecutive_fetch_count:
             self.netloc_consecutive_fetch_count[current_netloc] = 0
 
-        if self.last_fetch_netloc == current_netloc:
+        if self.get_last_fetch_netloc() == current_netloc:
             self.netloc_consecutive_fetch_count[current_netloc] += 1
         else:
             self.netloc_consecutive_fetch_count[current_netloc] = 1
-            if self.last_fetch_netloc:
-                self.netloc_consecutive_fetch_count[self.last_fetch_netloc] = 0
+            if self.get_last_fetch_netloc():
+                self.netloc_consecutive_fetch_count[self.get_last_fetch_netloc()] = 0
 
         if self.netloc_consecutive_fetch_count[current_netloc] == self.NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER:
             self.netloc_pause_until[current_netloc] = time.time() + self.NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC
@@ -229,20 +240,20 @@ class WebCrawler:
         if not current_netloc in self.netloc_consecutive_timeout_pause_count:
             self.netloc_consecutive_timeout_pause_count[current_netloc] = 0
 
-        current_fetch_timeout = False
         try:
             self.save_url_fetch_history(current_url)
             self.handle_netloc_consecutive_fetch(current_netloc)
             raw_html = self.get_raw_document(current_url, ContentType.HTML)
 
             # Below is only executed if the html is successfully fetched
+            current_fetch_timeout = False
             html_file_path = self.get_html_file_path(current_url)
             self.write_file(html_file_path, raw_html)
             self.html_count += 1
             print(f"#{self.html_count} Got html from {current_url}")
 
             self.netloc_consecutive_timeout_count[current_netloc] = 0
-            self.netloc_consecutive_timeout_count[self.last_fetch_netloc] = 0
+            self.netloc_consecutive_timeout_count[self.get_last_fetch_netloc()] = 0
             self.netloc_consecutive_timeout_pause_count[current_netloc] = 0
 
             raw_urls_in_page = self.get_raw_urls_in_page(raw_html)
@@ -255,12 +266,12 @@ class WebCrawler:
             current_fetch_timeout = True
 
             # Handle netloc consecutive timeout
-            if current_netloc == self.last_fetch_netloc:
+            if current_netloc == self.get_last_fetch_netloc():
                 self.netloc_consecutive_timeout_count[current_netloc] += 1
             else:
                 self.netloc_consecutive_timeout_count[current_netloc] = 1
-                if self.last_fetch_netloc:
-                    self.netloc_consecutive_timeout_count[self.last_fetch_netloc] = 0
+                if self.get_last_fetch_netloc():
+                    self.netloc_consecutive_timeout_count[self.get_last_fetch_netloc()] = 0
             
             if self.netloc_consecutive_timeout_count[current_netloc] == self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER:
                 self.netloc_consecutive_timeout_pause_count[current_netloc] += 1
@@ -272,11 +283,7 @@ class WebCrawler:
             print(f"Error processing URL {current_url}: {e}")
 
         finally:
-            self.last_fetch_netloc = current_netloc
-            if current_fetch_timeout:
-                self.last_fetch_timeout = True
-            else:
-                self.last_fetch_timeout = False
+            self.last_fetch_timeout = current_fetch_timeout
 
     def print_completion_time(self, start_time):
         end_time = time.time()
