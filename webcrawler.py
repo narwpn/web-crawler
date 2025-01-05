@@ -7,6 +7,9 @@ from urllib.robotparser import RobotFileParser
 from bs4 import BeautifulSoup
 import os
 from enum import Enum
+import pickle
+import signal
+import argparse
 
 
 class ContentTypeException(Exception):
@@ -51,29 +54,77 @@ class WebCrawler:
         ".css", ".js", ".json", ".xml", ".csv", ".txt",
     }
 
-    def __init__(self, initial_urls, html_limit, netloc_page_limit):
-        self.frontier_q = initial_urls
-        self.visited = set()
+    def __init__(self, initial_urls, html_limit, netloc_page_limit, pickle_file_path=None):
+        if pickle_file_path and os.path.exists(pickle_file_path):
+            self.load_state(pickle_file_path)
+        else:
+            self.frontier_q = initial_urls
+            self.visited = set()
 
-        self.HTML_LIMIT = html_limit
-        self.html_count = 0
+            self.HTML_LIMIT = html_limit
+            self.html_count = 0
 
-        self.NETLOC_PAGE_LIMIT = netloc_page_limit
-        self.netloc_page_count = {}
+            self.NETLOC_PAGE_LIMIT = netloc_page_limit
+            self.netloc_page_count = {}
 
-        self.url_fetch_history = [] # Keep NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER previous urls fetched to requeue after consecutive timeout
-        self.last_fetch_timeout = False
+            self.url_fetch_history = []
+            self.last_fetch_timeout = False
 
-        self.netloc_seen = {}
-        self.netloc_rp = {}
+            self.netloc_seen = {}
+            self.netloc_rp = {}
 
-        self.netloc_pause_until = {}  # Timestamp when netloc can be retried
+            self.netloc_pause_until = {}
+            self.netloc_consecutive_timeout_count = {}
+            self.netloc_consecutive_timeout_pause_count = {}
+            self.netloc_consecutive_fetch_count = {}
 
-        self.netloc_consecutive_timeout_count = {}  # Count consecutive timeouts per netloc
-        self.netloc_consecutive_timeout_pause_count = {}  # How many times netloc has been paused due to consecutive timeouts
+    def save_state(self):
+        """Save crawler state to a single pickle file"""
+        
+        state = {
+            'frontier_q': self.frontier_q,
+            'visited': self.visited,
+            'HTML_LIMIT': self.HTML_LIMIT,
+            'html_count': self.html_count,
+            'NETLOC_PAGE_LIMIT': self.NETLOC_PAGE_LIMIT,
+            'netloc_page_count': self.netloc_page_count,
+            'url_fetch_history': self.url_fetch_history,
+            'last_fetch_timeout': self.last_fetch_timeout,
+            'netloc_seen': self.netloc_seen,
+            'netloc_rp': self.netloc_rp,
+            'netloc_pause_until': self.netloc_pause_until,
+            'netloc_consecutive_timeout_count': self.netloc_consecutive_timeout_count,
+            'netloc_consecutive_timeout_pause_count': self.netloc_consecutive_timeout_pause_count,
+            'netloc_consecutive_fetch_count': self.netloc_consecutive_fetch_count,
+        }
+        
+        with open('crawler_state.pkl', 'wb') as f:
+            pickle.dump(state, f)
 
-        self.netloc_consecutive_fetch_count = {}  # Count consecutive fetches per netloc
-    
+        print(f"\nCrawler state saved to crawler_state.pkl")
+
+    def load_state(self, pickle_file_path):
+        """Load crawler state from pickle file"""
+        with open(pickle_file_path, 'rb') as f:
+            state = pickle.load(f)
+        
+        self.frontier_q = state['frontier_q']
+        self.visited = state['visited']
+        self.HTML_LIMIT = state['HTML_LIMIT']
+        self.html_count = state['html_count']
+        self.NETLOC_PAGE_LIMIT = state['NETLOC_PAGE_LIMIT']
+        self.netloc_page_count = state['netloc_page_count']
+        self.url_fetch_history = state['url_fetch_history']
+        self.last_fetch_timeout = state['last_fetch_timeout']
+        self.netloc_seen = state['netloc_seen']
+        self.netloc_rp = state['netloc_rp']
+        self.netloc_pause_until = state['netloc_pause_until']
+        self.netloc_consecutive_timeout_count = state['netloc_consecutive_timeout_count']
+        self.netloc_consecutive_timeout_pause_count = state['netloc_consecutive_timeout_pause_count']
+        self.netloc_consecutive_fetch_count = state['netloc_consecutive_fetch_count']
+
+        print(f"Loaded crawler state from {pickle_file_path}")
+
     def save_url_fetch_history(self, url):
         # -> most recent, ..., least recent
         # current_url is at index 0
@@ -199,6 +250,16 @@ class WebCrawler:
                 print(f"Failed to get or parse robots.txt for {netloc}: {e}")
 
     def crawl(self):
+        def signal_handler(signum, frame):
+            print("\nReceived interrupt signal. Saving state before exit...")
+            self.save_state()
+            sys.exit(0)
+
+        # Register the signal handler
+        signal.signal(signal.SIGINT, signal_handler)
+
+        print(f"Crawling {self.HTML_LIMIT} HTML pages, max {self.NETLOC_PAGE_LIMIT} pages per netloc")
+
         start_time = time.time()
 
         while len(self.frontier_q) > 0 and self.html_count < self.HTML_LIMIT:
@@ -285,10 +346,12 @@ class WebCrawler:
                     self.netloc_consecutive_timeout_count[self.get_last_fetch_netloc()] = 0
             
             if self.netloc_consecutive_timeout_count[current_netloc] == self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER:
+                self.netloc_consecutive_timeout_count[current_netloc] = 0
                 self.netloc_consecutive_timeout_pause_count[current_netloc] += 1
-                self.netloc_pause_until[current_netloc] = time.time() + self.NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC * 2 ** (self.netloc_consecutive_timeout_pause_count[current_netloc] - 1)
+                pause_duration = self.NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC * 2 ** (self.netloc_consecutive_timeout_pause_count[current_netloc] - 1)
+                self.netloc_pause_until[current_netloc] = time.time() + pause_duration
                 self.requeue_url_fetch_history()
-                print(f"{current_netloc} has reached max consecutive timeout count. Pausing for {self.NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC} seconds")
+                print(f"{current_netloc} has reached max consecutive timeout count. Pausing for {pause_duration} seconds")
 
         except Exception as e:
             print(f"Failed to process URL {current_url}: {e}")
@@ -314,17 +377,35 @@ def main():
         "https://www.ku.ac.th/th/faculty-associate-institution",
     ]
 
-    if len(sys.argv) != 3:
-        print("Usage: python webcrawler.py <html_limit> <netloc_page_limit>")
-        sys.exit(1)
-    try:
-        html_limit = int(sys.argv[1])
-        netloc_page_limit = int(sys.argv[2])
-    except ValueError:
-        print("Invalid argument for html limit or netloc page limit")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='Web crawler for ku.ac.th domains')
+    
+    parser.add_argument('-l', '--html-limit', 
+                       type=int, 
+                       required=False,
+                       default=10000,
+                       help='Maximum number of HTML pages to crawl')
+    
+    parser.add_argument('-n', '--netloc-limit',
+                       type=int,
+                       required=False,
+                       default=100,
+                       help='Maximum number of pages to crawl per netloc')
+    
+    parser.add_argument('-s', '--state-dir',
+                       type=str,
+                       required=False,
+                       default=None,
+                       help='Path to the pickle file containing the crawler state to resume from')
 
-    crawler = WebCrawler(initial_urls, html_limit, netloc_page_limit)
+    args = parser.parse_args()
+
+    crawler = WebCrawler(
+        initial_urls=initial_urls,
+        html_limit=args.html_limit,
+        netloc_page_limit=args.netloc_limit,
+        pickle_file_path=args.state_dir
+    )
+
     crawler.crawl()
 
 
