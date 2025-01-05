@@ -36,7 +36,7 @@ class WebCrawler:
     NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC = 60  # Seconds to pause netloc after reaching limit
 
     # Netloc timeout handling limits
-    NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER = NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER  # How many consecutive timeouts within a netloc before pausing it (must be <= NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER)
+    NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER = 3  # How many consecutive timeouts within a netloc before pausing it (must be <= NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER)
     NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC = 60  # Seconds to pause netloc before it can be retried (initial value of exponential backoff)
 
     EXCLUDED_EXTENSIONS = {
