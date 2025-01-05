@@ -23,13 +23,13 @@ class WebCrawler:
     USER_AGENT = "SantaBot"
     FROM_EMAIL = "test@email.com"
 
-    # Netloc timeout handling limits
-    NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER = 5  # How many consecutive timeouts within a netloc before pausing it
-    NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC = 60  # Seconds to pause netloc before it can be retried (initial value of exponential backoff)
-
     # Consecutive fetch limits
     NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER = 5  # How many consecutive fetches before pausing netloc
     NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC = 60  # Seconds to pause netloc after reaching limit
+
+    # Netloc timeout handling limits
+    NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER = NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER  # How many consecutive timeouts within a netloc before pausing it (must be <= NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER)
+    NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC = 60  # Seconds to pause netloc before it can be retried (initial value of exponential backoff)
 
     EXCLUDED_EXTENSIONS = {
         # Images
@@ -249,7 +249,7 @@ class WebCrawler:
             normalized_urls = self.get_normalized_urls(current_url, raw_urls_in_page)
             old_frontier_q_size = len(self.frontier_q)
             self.filter_and_enqueue_urls(normalized_urls)
-            print(f"Found {len(self.frontier_q) - old_frontier_q_size} new urls ({len(self.frontier_q)} total)")
+            print(f"    Found {len(self.frontier_q) - old_frontier_q_size} new urls ({len(self.frontier_q)} total)")
 
         except (ConnectTimeout, ReadTimeout):
             current_fetch_timeout = True
