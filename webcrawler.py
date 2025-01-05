@@ -23,18 +23,13 @@ class WebCrawler:
     USER_AGENT = "SantaBot"
     FROM_EMAIL = "test@email.com"
 
-    # URL timeout handling limits
-    URL_TIMEOUT_PAUSE_SEC = 60  # Seconds to wait before a URL can be retried
-    URL_MAX_TIMEOUT_RETRIES = 3  # Max retries for a single URL before skipping
-
     # Netloc timeout handling limits
     NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER = 5  # How many consecutive timeouts within a netloc before pausing it
-    NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_MIN = 15  # Minutes to pause netloc before it can be retried
-    NETLOC_CONSECUTIVE_TIMEOUT_MAX_PAUSE = 3  # Max times a netloc can be paused before skipping
+    NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC = 60  # Seconds to pause netloc before it can be retried (initial value of exponential backoff)
 
     # Consecutive fetch limits
     NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER = 5  # How many consecutive fetches before pausing netloc
-    NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC = 30  # Seconds to pause netloc after reaching limit
+    NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC = 60  # Seconds to pause netloc after reaching limit
 
     EXCLUDED_EXTENSIONS = {
         # Images
@@ -60,12 +55,10 @@ class WebCrawler:
 
         self.last_fetch_netloc = ""
         self.last_fetch_timeout = False
+        self.url_fetch_history = [] # Keep NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER previous urls fetched to requeue after consecutive timeout
 
         self.netloc_seen = {}
         self.netloc_rp = {}
-
-        self.url_pause_until = {}  # Timestamp when URL can be retried
-        self.url_timeout_count = {}  # Count timeouts per URL
 
         self.netloc_pause_until = {}  # Timestamp when netloc can be retried
 
@@ -73,6 +66,19 @@ class WebCrawler:
         self.netloc_consecutive_timeout_pause_count = {}  # How many times netloc has been paused due to consecutive timeouts
 
         self.netloc_consecutive_fetch_count = {}  # Count consecutive fetches per netloc
+    
+    def save_url_fetch_history(self, url):
+        self.url_fetch_history.insert(0, url)
+        if len(self.url_fetch_history) > self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER:
+            self.url_fetch_history.pop()
+
+    def requeue_url_fetch_history(self):
+        for url in self.url_fetch_history:
+            self.frontier_q.insert(0, url)
+            try:
+                self.visited.remove(url)
+            except KeyError:
+                pass
 
     def get_raw_document(self, url, content_type):
         headers = {"User-Agent": self.USER_AGENT, "From": self.FROM_EMAIL}
@@ -87,7 +93,7 @@ class WebCrawler:
         else:
             return response.text
 
-    def get_raw_urls(self, raw_html):
+    def get_raw_urls_in_page(self, raw_html):
         soup = BeautifulSoup(raw_html, "html.parser")
         return [a_tag["href"] for a_tag in soup.find_all("a", href=True)]
 
@@ -128,27 +134,13 @@ class WebCrawler:
             url = self.frontier_q[i]
             netloc = urlsplit(url).netloc
 
-            # Remove url if its netloc has exceeded max pause count
-            if self.netloc_consecutive_timeout_pause_count.get(netloc, 0) > self.NETLOC_CONSECUTIVE_TIMEOUT_MAX_PAUSE:
-                self.frontier_q.pop(i)
-                continue
-
-            # Remove url if its timeout count has exceeded max retries
-            if self.url_timeout_count.get(url, 0) > self.URL_MAX_TIMEOUT_RETRIES:
-                self.frontier_q.pop(i)
-                continue
-
             # Skip url if its netloc is paused
             if netloc in self.netloc_pause_until and current_time < self.netloc_pause_until[netloc]:
                 continue
 
-            # Skip if url is paused
-            if url in self.url_pause_until and current_time < self.url_pause_until[url]:
-                continue
+            return self.frontier_q.pop(i)
 
-            return self.frontier_q.pop(i), i
-
-        return "", -1
+        return ""
 
     def get_html_file_path(self, url):
         url_parts = urlsplit(url)
@@ -166,50 +158,50 @@ class WebCrawler:
             html_file_path += f"_#{fragment_part}"
         return f"{html_file_path}.html"
 
-    def process_robots_txt(self, netloc):
+    def try_get_and_parse_robots_txt(self, netloc):
         if netloc not in self.netloc_seen:
             self.netloc_seen[netloc] = True
             robots_txt_url = f"https://{netloc}/robots.txt"
             try:
                 robots_txt = self.get_raw_document(robots_txt_url, ContentType.TXT)
+
+                # Below is only executed if the robots.txt is successfully fetched
+                print(f"Found robots.txt at {robots_txt_url}")
+
                 rp = RobotFileParser()
                 rp.parse(robots_txt.splitlines())
                 self.netloc_rp[netloc] = rp
 
                 robots_txt_file_path = f"html/{netloc}/robots.txt"
                 self.write_file(robots_txt_file_path, robots_txt)
-                print(f"Got robots.txt from {robots_txt_url}")
-
                 self.append_file("list_robots.txt", f"{netloc}\n")
+
                 if rp.site_maps():
                     print(f"Found sitemap at {rp.site_maps()}")
                     self.append_file("list_sitemap.txt", f"{netloc}\n")
 
             except (Exception) as e:
-                print(f"Error processing robots.txt: {e}")
+                print(f"Failed to get robots.txt: {e}")
 
     def crawl(self):
         start_time = time.time()
 
         while len(self.frontier_q) > 0 and self.html_count < self.html_limit:
-            current_url, frontier_q_index = self.dequeue_url()
+            current_url = self.dequeue_url()
             if not current_url:
                 time.sleep(1)
                 continue
-
             self.visited.add(current_url)
+
             current_url_parts = urlsplit(current_url)
-
-            self.handle_netloc_consecutive_fetch(current_url_parts.netloc)
-            self.process_robots_txt(current_url_parts.netloc)
-
+            self.try_get_and_parse_robots_txt(current_url_parts.netloc)
             if (
                 current_url_parts.netloc in self.netloc_rp
                 and not self.netloc_rp[current_url_parts.netloc].can_fetch(self.USER_AGENT, current_url)
             ):
                 continue
 
-            self.process_url(current_url, frontier_q_index)
+            self.process_url(current_url)
             time.sleep(1)
 
         self.print_completion_time(start_time)
@@ -227,11 +219,11 @@ class WebCrawler:
 
         if self.netloc_consecutive_fetch_count[current_netloc] == self.NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER:
             self.netloc_pause_until[current_netloc] = time.time() + self.NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC
+            print(f"Netloc {current_netloc} has exceeded max consecutive fetch count. Pausing for {self.NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC} seconds")
 
-    def process_url(self, current_url, frontier_q_index):
+    def process_url(self, current_url):
         current_netloc = urlsplit(current_url).netloc
-        if not current_url in self.url_timeout_count:
-            self.url_timeout_count[current_url] = 0
+
         if not current_netloc in self.netloc_consecutive_timeout_count:
             self.netloc_consecutive_timeout_count[current_netloc] = 0
         if not current_netloc in self.netloc_consecutive_timeout_pause_count:
@@ -239,29 +231,28 @@ class WebCrawler:
 
         current_fetch_timeout = False
         try:
+            self.save_url_fetch_history(current_url)
+            self.handle_netloc_consecutive_fetch(current_netloc)
             raw_html = self.get_raw_document(current_url, ContentType.HTML)
 
-            self.netloc_consecutive_timeout_count[current_netloc] = 0
-            self.netloc_consecutive_timeout_count[self.last_fetch_netloc] = 0
-
+            # Below is only executed if the html is successfully fetched
             html_file_path = self.get_html_file_path(current_url)
             self.write_file(html_file_path, raw_html)
-
             self.html_count += 1
             print(f"#{self.html_count} Got html from {current_url}")
 
-            raw_urls = self.get_raw_urls(raw_html)
-            normalized_urls = self.get_normalized_urls(current_url, raw_urls)
+            self.netloc_consecutive_timeout_count[current_netloc] = 0
+            self.netloc_consecutive_timeout_count[self.last_fetch_netloc] = 0
+            self.netloc_consecutive_timeout_pause_count[current_netloc] = 0
+
+            raw_urls_in_page = self.get_raw_urls_in_page(raw_html)
+            normalized_urls = self.get_normalized_urls(current_url, raw_urls_in_page)
+            old_frontier_q_size = len(self.frontier_q)
             self.filter_and_enqueue_urls(normalized_urls)
-            print(f"Current frontier size: {len(self.frontier_q)}")
-        
+            print(f"Found {len(self.frontier_q) - old_frontier_q_size} new urls ({len(self.frontier_q)} total)")
+
         except (ConnectTimeout, ReadTimeout):
             current_fetch_timeout = True
-
-            # Handle url timeout
-            self.url_timeout_count[current_url] += 1
-            self.url_pause_until[current_url] = time.time() + self.URL_TIMEOUT_PAUSE_SEC
-            print(f"Timeout from {current_url}. Pausing for {self.URL_TIMEOUT_PAUSE_SEC} seconds")
 
             # Handle netloc consecutive timeout
             if current_netloc == self.last_fetch_netloc:
@@ -273,17 +264,15 @@ class WebCrawler:
             
             if self.netloc_consecutive_timeout_count[current_netloc] == self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER:
                 self.netloc_consecutive_timeout_pause_count[current_netloc] += 1
-                self.netloc_pause_until[current_netloc] = time.time() + self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_MIN * 60
-                print(f"Netloc {current_netloc} has exceeded max consecutive timeout count. Pausing for {self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_MIN} minutes")
-
-            # Put the url back to the frontier queue
-            self.frontier_q.insert(frontier_q_index, current_url)
+                self.netloc_pause_until[current_netloc] = time.time() + self.NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC * 2 ** (self.netloc_consecutive_timeout_pause_count[current_netloc] - 1)
+                self.requeue_url_fetch_history()
+                print(f"Netloc {current_netloc} has exceeded max consecutive timeout count. Pausing for {self.NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC} seconds")
 
         except Exception as e:
             print(f"Error processing URL {current_url}: {e}")
 
         finally:
-            self.last_fetch_netloc = urlsplit(current_url).netloc
+            self.last_fetch_netloc = current_netloc
             if current_fetch_timeout:
                 self.last_fetch_timeout = True
             else:
