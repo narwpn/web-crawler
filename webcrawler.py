@@ -28,6 +28,8 @@ class WebCrawler:
     USER_AGENT = "SantaBot"
     FROM_EMAIL = "test@email.com"
 
+    NETLOC_MAX_PAGES = 200  # Maximum number of pages to crawl per netloc
+
     # Consecutive fetch limits
     NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER = 5  # How many consecutive fetches before pausing netloc
     NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC = 60  # Seconds to pause netloc after reaching limit
@@ -57,6 +59,7 @@ class WebCrawler:
 
         self.html_count = 0
         self.html_limit = html_limit
+        self.netloc_page_count = {}  # Track number of pages per netloc
 
         self.url_fetch_history = [] # Keep NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER previous urls fetched to requeue after consecutive timeout
         self.last_fetch_timeout = False
@@ -136,6 +139,7 @@ class WebCrawler:
                 and url_parts.scheme.startswith("http")
                 and url_parts.netloc.endswith(".ku.ac.th")
                 and not url_parts.path.endswith(tuple(self.EXCLUDED_EXTENSIONS))
+                and self.netloc_page_count.get(url_parts.netloc, 0) < self.NETLOC_MAX_PAGES
             ):
                 self.frontier_q.append(url)
 
@@ -235,6 +239,8 @@ class WebCrawler:
     def process_url(self, current_url):
         current_netloc = urlsplit(current_url).netloc
 
+        if current_netloc not in self.netloc_page_count:
+            self.netloc_page_count[current_netloc] = 0
         if not current_netloc in self.netloc_consecutive_timeout_count:
             self.netloc_consecutive_timeout_count[current_netloc] = 0
         if not current_netloc in self.netloc_consecutive_timeout_pause_count:
@@ -250,6 +256,10 @@ class WebCrawler:
             html_file_path = self.get_html_file_path(current_url)
             self.write_file(html_file_path, raw_html)
             self.html_count += 1
+            self.netloc_page_count[current_netloc] += 1
+            if self.netloc_page_count[current_netloc] == self.NETLOC_MAX_PAGES:
+                self.frontier_q = [url for url in self.frontier_q if urlsplit(url).netloc != current_netloc]
+                print(f"Reached max pages for {current_netloc}. Removing from frontier")
             print(f"#{self.html_count} Got html from {current_url}")
 
             self.netloc_consecutive_timeout_count[current_netloc] = 0
