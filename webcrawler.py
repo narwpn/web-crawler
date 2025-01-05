@@ -210,6 +210,9 @@ class WebCrawler:
             return self.frontier_q.pop(i)
 
         return ""
+    
+    def clean_windows_path_characters(self, path):
+        return re.sub(r'[\\/:*?"<>|]', '_', path)
 
     def get_html_file_path(self, url):
         url_parts = urlsplit(url)
@@ -217,17 +220,19 @@ class WebCrawler:
         path_part = url_parts.path.strip("/").replace(".htm", ".html")
         if ".html" not in path_part:
             path_part = "page.html" if path_part == "" else f"{path_part}/page.html"
+
         path_part = path_part.replace(".html", "")
         query_part = re.sub(r"[?&]", "_", url_parts.query)
-        fragment_part = url_parts.fragment
+        query_part = self.clean_windows_path_characters(query_part)
+        fragment_part = self.clean_windows_path_characters(url_parts.fragment)
 
         html_file_path = f"html/{url_parts.netloc}/{path_part}"
         if query_part:
             html_file_path += f"_{query_part}"
         if fragment_part:
-            html_file_path += f"_#{fragment_part}"
+            html_file_path += f"_{fragment_part}"
         html_file_path += ".html"
-        html_file_path = re.sub(r'[\\/:*?"<>|]', '_', html_file_path)
+
         return html_file_path
 
     def try_get_and_parse_robots_txt(self, netloc):
