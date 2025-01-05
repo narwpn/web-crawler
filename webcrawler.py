@@ -54,9 +54,9 @@ class WebCrawler:
         ".css", ".js", ".json", ".xml", ".csv", ".txt",
     }
 
-    def __init__(self, initial_urls, html_limit, netloc_page_limit, pickle_file_path=None):
-        if pickle_file_path and os.path.exists(pickle_file_path):
-            self.load_state(pickle_file_path)
+    def __init__(self, initial_urls, html_limit, netloc_page_limit, state_file_path=None):
+        if state_file_path and os.path.exists(state_file_path):
+            self.load_state(state_file_path)
         else:
             self.frontier_q = initial_urls
             self.visited = set()
@@ -97,15 +97,17 @@ class WebCrawler:
             'netloc_consecutive_timeout_pause_count': self.netloc_consecutive_timeout_pause_count,
             'netloc_consecutive_fetch_count': self.netloc_consecutive_fetch_count,
         }
+
+        state_file_path = state_file_path or "crawler_state.pkl"
         
-        with open('crawler_state.pkl', 'wb') as f:
+        with open(state_file_path, 'wb') as f:
             pickle.dump(state, f)
 
-        print(f"\nCrawler state saved to crawler_state.pkl")
+        print(f"\nCrawler state saved to {state_file_path}")
 
-    def load_state(self, pickle_file_path):
+    def load_state(self, state_file_path):
         """Load crawler state from pickle file"""
-        with open(pickle_file_path, 'rb') as f:
+        with open(state_file_path, 'rb') as f:
             state = pickle.load(f)
         
         self.frontier_q = state['frontier_q']
@@ -123,7 +125,7 @@ class WebCrawler:
         self.netloc_consecutive_timeout_pause_count = state['netloc_consecutive_timeout_pause_count']
         self.netloc_consecutive_fetch_count = state['netloc_consecutive_fetch_count']
 
-        print(f"Loaded crawler state from {pickle_file_path}")
+        print(f"Loaded crawler state from {state_file_path}")
 
     def save_url_fetch_history(self, url):
         # -> most recent, ..., least recent
@@ -391,7 +393,7 @@ def main():
                        default=100,
                        help='Maximum number of pages to crawl per netloc')
     
-    parser.add_argument('-s', '--state-dir',
+    parser.add_argument('-s', '--state-file',
                        type=str,
                        required=False,
                        default=None,
@@ -403,7 +405,7 @@ def main():
         initial_urls=initial_urls,
         html_limit=args.html_limit,
         netloc_page_limit=args.netloc_limit,
-        pickle_file_path=args.state_dir
+        state_file_path=args.state_file
     )
 
     crawler.crawl()
