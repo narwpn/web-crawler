@@ -230,7 +230,7 @@ class WebCrawler:
 
         if self.netloc_consecutive_fetch_count[current_netloc] == self.NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER:
             self.netloc_pause_until[current_netloc] = time.time() + self.NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC
-            print(f"{current_netloc} has exceeded max consecutive fetch count. Pausing for {self.NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC} seconds")
+            print(f"{current_netloc} has reached max consecutive fetch count. Pausing for {self.NETLOC_CONSECUTIVE_FETCH_PAUSE_SEC} seconds")
 
     def process_url(self, current_url):
         current_netloc = urlsplit(current_url).netloc
@@ -264,6 +264,7 @@ class WebCrawler:
 
         except (ConnectTimeout, ReadTimeout):
             current_fetch_timeout = True
+            print(f"Timeout fetching {current_url}")
 
             # Handle netloc consecutive timeout
             if current_netloc == self.get_last_fetch_netloc():
@@ -277,10 +278,10 @@ class WebCrawler:
                 self.netloc_consecutive_timeout_pause_count[current_netloc] += 1
                 self.netloc_pause_until[current_netloc] = time.time() + self.NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC * 2 ** (self.netloc_consecutive_timeout_pause_count[current_netloc] - 1)
                 self.requeue_url_fetch_history()
-                print(f"{current_netloc} has exceeded max consecutive timeout count. Pausing for {self.NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC} seconds")
+                print(f"{current_netloc} has reached max consecutive timeout count. Pausing for {self.NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC} seconds")
 
         except Exception as e:
-            print(f"Error processing URL {current_url}: {e}")
+            print(f"Failed to process URL {current_url}: {e}")
 
         finally:
             self.last_fetch_timeout = current_fetch_timeout
