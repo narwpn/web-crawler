@@ -98,7 +98,7 @@ class WebCrawler:
             'netloc_consecutive_fetch_count': self.netloc_consecutive_fetch_count,
         }
 
-        state_file_path = state_file_path or "crawler_state.pkl"
+        state_file_path = "crawler_state.pkl"
         
         with open(state_file_path, 'wb') as f:
             pickle.dump(state, f)
