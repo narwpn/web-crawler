@@ -39,7 +39,7 @@ class WebCrawler:
     # Netloc timeout handling limits
     NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER = 3  # How many consecutive timeouts within a netloc before pausing it (must be <= NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER)
     NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC = 60  # Seconds to pause netloc before it can be retried (initial value of exponential backoff)
-    NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_LIMIT = 3 # How many times to retry a netloc before giving up NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER URLs at the front of the frontier queue
+    NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_LIMIT = 5 # How many times to retry a set of URLs in a netloc before giving up that set of URLs and reset exponential backoff
 
     EXCLUDED_EXTENSIONS = {
         # Images
