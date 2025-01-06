@@ -367,7 +367,7 @@ class WebCrawler:
                     print(f"{current_netloc} has reached max consecutive timeout count. Pausing for {pause_duration} seconds")
                 else:
                     self.netloc_consecutive_timeout_pause_count[current_netloc] = 0
-                    print(f"{current_netloc} has exceeded consecutive timeout pause limit. Giving up on {self.NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER} URLs")
+                    print(f"{current_netloc} has exceeded consecutive timeout pause limit. Giving up on {self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER} URLs")
 
         except Exception as e:
             print(f"Failed to process URL {current_url}: {e}")
