@@ -39,6 +39,7 @@ class WebCrawler:
     # Netloc timeout handling limits
     NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER = 3  # How many consecutive timeouts within a netloc before pausing it (must be <= NETLOC_CONSECUTIVE_FETCH_PAUSE_TRIGGER)
     NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC = 60  # Seconds to pause netloc before it can be retried (initial value of exponential backoff)
+    NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_LIMIT = 3 # How many times to retry a netloc before giving up NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER URLs at the front of the frontier queue
 
     EXCLUDED_EXTENSIONS = {
         # Images
@@ -359,10 +360,14 @@ class WebCrawler:
             if self.netloc_consecutive_timeout_count[current_netloc] == self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_TRIGGER:
                 self.netloc_consecutive_timeout_count[current_netloc] = 0
                 self.netloc_consecutive_timeout_pause_count[current_netloc] += 1
-                pause_duration = self.NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC * 2 ** (self.netloc_consecutive_timeout_pause_count[current_netloc] - 1)
-                self.netloc_pause_until[current_netloc] = time.time() + pause_duration
-                self.requeue_url_fetch_history()
-                print(f"{current_netloc} has reached max consecutive timeout count. Pausing for {pause_duration} seconds")
+                if self.netloc_consecutive_timeout_pause_count[current_netloc] <= self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_LIMIT:
+                    pause_duration = self.NETLOC_CONSECUTIVE_TIMEOUT_INITIAL_PAUSE_SEC * 2 ** (self.netloc_consecutive_timeout_pause_count[current_netloc] - 1)
+                    self.netloc_pause_until[current_netloc] = time.time() + pause_duration
+                    self.requeue_url_fetch_history()
+                    print(f"{current_netloc} has reached max consecutive timeout count. Pausing for {pause_duration} seconds")
+                else:
+                    self.netloc_consecutive_timeout_pause_count[current_netloc] = 0
+                    print(f"{current_netloc} has exceeded consecutive timeout pause limit. Giving up on {self.NETLOC_CONSECUTIVE_TIMEOUT_PAUSE_LIMIT} URLs")
 
         except Exception as e:
             print(f"Failed to process URL {current_url}: {e}")
